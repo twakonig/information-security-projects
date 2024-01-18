@@ -1,0 +1,221 @@
+theory IKEv1
+begin
+
+/* IKEv1 protocol:
+   A -> B : aenc_B{A}, aenc_B{N_A}, g^x  (N_A fresh nonce, x fresh)
+   B -> A : aenc_A{B}, aenc_A{N_B}, g^y, HASH_B  (y fresh)
+   A -> B : HASH_A
+where:
+   HASH_A = prf(<skID, g^x, g^y, A, B>)
+   HASH_B = prf(<skID, g^y, g^x, B, A>)
+   skID = prf(<h(<N_A, N_B>), A, B>)
+
+     */
+
+
+/* ----------------- */
+/* Equational theory */
+/* ----------------- */
+
+/* Load the built-in Diffie-Hellman and signature equational theories */
+builtins: diffie-hellman, asymmetric-encryption, hashing
+
+/*Define an abstract function prf with no additional algebraic properties
+representing a "perfect" pseudo-random function. */
+functions: prf/1
+
+
+/* ------------------ */
+/* Key infrastructure */
+/* ------------------ */
+
+rule genkey: 
+   [ Fr(~ltkA) ] 
+   -->
+   [ !Ltk($A, ~ltkA),  
+     !Pk($A, pk(~ltkA)),
+     Out(pk(~ltkA)) ]
+
+/* ---------- */
+/* Key Reveal */
+/* ---------- */
+
+// adversary may compromise agent (when ltk is revealed)
+rule Reveal_ltk:
+    [ !Ltk(A, ltkA) ]
+  --[ Compromised(A) ]->
+    [ Out(ltkA) ]
+
+
+/* Question 7*/
+
+/*----------------*/
+/* Protocol rules */
+/*----------------*/
+/*---------------------*/
+/* Rules for Initiator */
+/*---------------------*/
+
+// A sends first message, encrypts with public key of B
+rule Init_1:
+  let
+      gXI = 'g'^~xI
+      A_enc = aenc($A, pkB)
+      Na_enc = aenc(~Na, pkB)
+
+  in
+    [
+      Fr(~xI),
+      Fr(~Na),
+      !Pk($B, pkB)
+    ]
+    -->
+    [
+      Init_1($A, ~xI, ~Na, gXI, $B, pkB),
+      Out( <A_enc, Na_enc, gXI> )
+    ]
+
+
+// A receives message and sends HASH_A (last rule of A)
+rule Init_2:
+  let
+      B = adec(fst(msgR), ~ltkA)
+      Nb = adec(fst(snd(msgR)), ~ltkA)
+      gYI = fst(snd(snd(msgR)))
+      HASH_B = snd(snd(snd(msgR)))                 
+      skID = prf(<h(<~Na, Nb>), $A, B>)
+      HASH_A = prf(<skID, gXI, gYI, $A, B>)
+      hash_B = prf(<skID, gYI, gXI, B, $A>)
+      kI = prf(<skID, gYI^~xI>)
+  in
+    [
+      Init_1($A, ~xI, ~Na, gXI, B, pkB),
+      !Ltk($A, ~ltkA),
+      In( msgR )
+    ]
+    --[ FinishedI($A),
+        SecretI($A, B, kI),
+        Eq(HASH_B, hash_B),
+        RunningI($A, B, kI),
+        CommitI($A, B, kI) ]->                                     
+    [
+      Out( HASH_A )
+    ]
+
+/*---------------------*/
+/* Rules for Responder */
+/*---------------------*/
+
+// B receives message, generates fresh values, sends message and encrypts with public key of A
+rule Resp_1:
+  let
+      gYR = 'g'^~yR
+      A = adec(fst(msgI), ~ltkB)
+      Na = adec(fst(snd(msgI)), ~ltkB)
+      gXR = snd(snd(msgI))
+      B_enc = aenc($B, pkA)
+      Nb_enc = aenc(~Nb, pkA)
+      skID = prf(<h(<Na, ~Nb>), A, $B>)
+      HASH_B = prf(<skID, gYR, gXR, $B, A>)
+      kR = prf(<skID, gXR^~yR>)
+      
+  in
+    [
+      Fr(~yR),
+      Fr(~Nb),
+      !Pk(A, pkA),
+      !Ltk($B, ~ltkB),
+      In ( msgI )
+    ]
+    --[ RunningR($B, A, kR) ]->
+    [
+      Resp_1($B, ~yR, ~Nb, gYR, ~ltkB, kR, A, gXR, skID),
+      Out( <B_enc, Nb_enc, gYR, HASH_B> )
+    ]
+
+
+// B receives HASH_A and checks for equality (last rule of B)
+rule Resp_2:
+  let
+      hash_A = prf(<skID, gXR, gYR, A, $B>)
+  in
+    [
+      Resp_1($B, ~yR, ~Nb, gYR, ~ltkB, kR, A, gXR, skID),
+      In( msgI )
+    ]
+    --[ FinishedR($B),
+        Eq(msgI, hash_A),
+        SecretR(A, $B, kR),
+        CommitR($B, A, kR)]->
+    []
+
+
+
+/* ---------- */
+/* Restrictions */
+/* ---------- */
+
+restriction equality:
+"All x y #i. Eq(x,y) @i ==> x = y"
+
+
+/* ---------- */
+/* Properties */
+/* ---------- */
+
+/* Executability checks */
+lemma executableI:
+exists-trace "Ex #i A. FinishedI(A) @ i & not (Ex #j B. Compromised(B)@j)"
+
+lemma executableR:
+exists-trace "Ex #i B. FinishedR(B) @ i & not (Ex #j B. Compromised(B)@j)"
+
+
+/* Secrecy and agreement properties */
+
+lemma key_secrecyI:
+"All #i A B k.
+ (SecretI(A, B, k) @ i &
+  not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+  ==> not (Ex #j. K(k) @ j)"
+
+lemma key_secrecyR:
+"All #i A B k.
+ (SecretR(A, B, k) @ i &
+  not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+  ==> not (Ex #j. K(k) @ j)"
+
+
+lemma agreementR:
+"All #i A B k.
+  (CommitR( B, A, k) @ i &
+   not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+   ==> (Ex #j. RunningI(A, B, k) @ j & j < i)"
+
+lemma agreementI:
+"All #i A B k.
+  (CommitI( A, B, k) @ i &
+   not ((Ex #l. Compromised(A) @ l) | (Ex #m. Compromised(B) @ m)))
+   ==> (Ex #j. RunningR(B, A, k) @ j & j < i)"
+
+
+/* Perfect Forward Secrecy:  (Question 8)*/
+
+lemma secrecy_PFS_R:
+ " All A B k #i. 
+    SecretR(A, B, k) @i &
+      not ((Ex #l. (Compromised(A) @ l & l<i )) | (Ex #m. (Compromised(B) @ m & m < i)) )  
+    ==> not (Ex #j. K(k)@j )"
+
+
+lemma secrecy_PFS_I:
+ " All A B k #i. 
+    SecretI(A, B, k) @i &
+      not ((Ex #l. (Compromised(A) @ l & l<i )) | (Ex #m. (Compromised(B) @ m & m < i)) )  
+    ==> not (Ex #j. K(k)@j )"
+
+
+end
+
+
+
